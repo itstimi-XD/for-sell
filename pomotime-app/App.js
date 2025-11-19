@@ -8,18 +8,23 @@ import {
   Platform,
   Alert,
   SafeAreaView,
+  Vibration,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import * as StoreReview from 'expo-store-review';
+import * as Haptics from 'expo-haptics';
+import Svg, { Circle } from 'react-native-svg';
 
 // Components
 import PremiumModal from './components/PremiumModal';
 import ThemeSelector from './components/ThemeSelector';
 import CustomTimerModal from './components/CustomTimerModal';
 import { getThemeById } from './constants/themes';
+
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 // 알림 핸들러 설정
 Notifications.setNotificationHandler({
@@ -53,8 +58,39 @@ export default function App() {
 
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const circleAnim = useRef(new Animated.Value(0)).current;
   const pulseAnimationRef = useRef(null);
   const intervalRef = useRef(null);
+
+  // 햅틱 피드백 함수
+  const triggerHaptic = (type = 'light') => {
+    if (Platform.OS === 'ios') {
+      switch(type) {
+        case 'light':
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          break;
+        case 'medium':
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          break;
+        case 'heavy':
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+          break;
+        case 'success':
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          break;
+        case 'error':
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          break;
+      }
+    } else {
+      // Android
+      if (type === 'heavy' || type === 'success') {
+        Vibration.vibrate(100);
+      } else {
+        Vibration.vibrate(50);
+      }
+    }
+  };
 
   // 초기 로드
   useEffect(() => {
@@ -94,6 +130,16 @@ export default function App() {
     };
   }, [isActive, pulseAnim]);
 
+  // 원형 프로그레스 바 애니메이션
+  useEffect(() => {
+    const progress = timeLeft / timerSettings[mode];
+    Animated.timing(circleAnim, {
+      toValue: progress,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [timeLeft, mode, timerSettings]);
+
   const registerForPushNotificationsAsync = async () => {
     try {
       if (Platform.OS === 'android') {
@@ -116,7 +162,7 @@ export default function App() {
       if (finalStatus !== 'granted') {
         Alert.alert(
           '알림 권한 필요',
-          '타이머 완료 시 알림을 받으려면 알림 권한이 필요합니다. 설정에서 권한을 허용해주세요.',
+          '타이머 완료 시 알림을 받으려면 알림 권한이 필요합니다.',
           [{ text: '확인' }]
         );
       }
@@ -176,6 +222,7 @@ export default function App() {
 
   const saveTheme = async (themeId) => {
     try {
+      triggerHaptic('light');
       await AsyncStorage.setItem('currentTheme', themeId);
       setCurrentTheme(themeId);
     } catch (error) {
@@ -185,6 +232,7 @@ export default function App() {
 
   const saveTimerSettings = async (settings) => {
     try {
+      triggerHaptic('success');
       await AsyncStorage.setItem('timerSettings', JSON.stringify(settings));
       setTimerSettings(settings);
       setTimeLeft(settings[mode]);
@@ -195,6 +243,17 @@ export default function App() {
 
   const handleTimerComplete = useCallback(async () => {
     setIsActive(false);
+
+    // 강력한 진동 패턴
+    if (Platform.OS === 'ios') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // 3번 진동
+      setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy), 100);
+      setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy), 300);
+      setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy), 500);
+    } else {
+      Vibration.vibrate([0, 200, 100, 200, 100, 200]);
+    }
 
     try {
       await Notifications.scheduleNotificationAsync({
@@ -219,7 +278,7 @@ export default function App() {
       setTotalPomodoros(newTotal);
       await saveStats(newTotal);
 
-      // 리뷰 요청 (10번째, 50번째)
+      // 리뷰 요청
       if (newTotal === 10 || newTotal === 50) {
         const available = await StoreReview.isAvailableAsync();
         if (available) {
@@ -273,12 +332,14 @@ export default function App() {
   }, [isActive, timeLeft, handleTimerComplete]);
 
   const switchMode = useCallback((newMode) => {
+    triggerHaptic('medium');
     setMode(newMode);
     setIsActive(false);
     setTimeLeft(timerSettings[newMode]);
   }, [timerSettings]);
 
   const toggleTimer = useCallback(() => {
+    triggerHaptic('medium');
     setIsActive(prev => !prev);
 
     Animated.sequence([
@@ -297,17 +358,19 @@ export default function App() {
   }, [scaleAnim]);
 
   const resetTimer = useCallback(() => {
+    triggerHaptic('light');
     setIsActive(false);
     setTimeLeft(timerSettings[mode]);
   }, [mode, timerSettings]);
 
   const resetDailyCount = useCallback(() => {
+    triggerHaptic('medium');
     setCompletedPomodoros(0);
     Alert.alert('✨', '오늘의 카운트가 초기화되었습니다!');
   }, []);
 
   const handlePurchase = useCallback(() => {
-    // 실제로는 인앱 구매 로직이 들어가야 함
+    triggerHaptic('success');
     Alert.alert(
       '구매 완료! 🎉',
       '프리미엄 기능이 잠금 해제되었습니다!',
@@ -321,6 +384,14 @@ export default function App() {
         }
       ]
     );
+  }, []);
+
+  // 빠른 시작 버튼 핸들러
+  const quickStart = useCallback((minutes) => {
+    triggerHaptic('medium');
+    setIsActive(false);
+    setTimeLeft(minutes * 60);
+    setMode('pomodoro');
   }, []);
 
   const formatTime = (seconds) => {
@@ -368,7 +439,13 @@ export default function App() {
   }, [mode]);
 
   const progress = timeLeft / timerSettings[mode];
+  const progressPercent = Math.round(progress * 100);
   const sessionText = mode === 'pomodoro' ? `세션 ${completedPomodoros + 1}` : '휴식 중';
+
+  // 원형 프로그레스 바 계산
+  const radius = 135;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference * (1 - progress);
 
   return (
     <LinearGradient
@@ -384,7 +461,10 @@ export default function App() {
         <View style={styles.topBar}>
           <TouchableOpacity
             style={styles.iconButton}
-            onPress={() => setShowThemeSelector(true)}
+            onPress={() => {
+              triggerHaptic('light');
+              setShowThemeSelector(true);
+            }}
             accessible={true}
             accessibilityLabel="테마 선택"
           >
@@ -392,7 +472,10 @@ export default function App() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.iconButton}
-            onPress={() => setShowCustomTimer(true)}
+            onPress={() => {
+              triggerHaptic('light');
+              setShowCustomTimer(true);
+            }}
             accessible={true}
             accessibilityLabel="타이머 설정"
           >
@@ -401,7 +484,10 @@ export default function App() {
           {!isPremium && (
             <TouchableOpacity
               style={styles.premiumButton}
-              onPress={() => setShowPremiumModal(true)}
+              onPress={() => {
+                triggerHaptic('medium');
+                setShowPremiumModal(true);
+              }}
               accessible={true}
               accessibilityLabel="프리미엄 구매"
             >
@@ -443,33 +529,85 @@ export default function App() {
             accessibilityLabel={`${modeText} 타이머: ${formatTime(timeLeft)}`}
           >
             <View style={styles.circleContainer}>
-              <View style={styles.outerRing} />
+              {/* 원형 프로그레스 바 (SVG) */}
+              <Svg width="320" height="320" style={styles.progressCircle}>
+                {/* 배경 원 */}
+                <Circle
+                  cx="160"
+                  cy="160"
+                  r={radius}
+                  stroke="rgba(255, 255, 255, 0.2)"
+                  strokeWidth="12"
+                  fill="none"
+                />
+                {/* 프로그레스 원 */}
+                <AnimatedCircle
+                  cx="160"
+                  cy="160"
+                  r={radius}
+                  stroke="#FFFFFF"
+                  strokeWidth="12"
+                  fill="none"
+                  strokeDasharray={circumference}
+                  strokeDashoffset={strokeDashoffset}
+                  strokeLinecap="round"
+                  rotation="-90"
+                  origin="160, 160"
+                />
+              </Svg>
 
+              {/* 타이머 컨텐츠 */}
               <View style={styles.timerContent}>
                 <Text style={styles.modeEmoji}>{modeEmoji}</Text>
                 <Text style={styles.modeTitle}>{modeText}</Text>
                 <Text style={styles.timerText}>{formatTime(timeLeft)}</Text>
-
-                <View style={styles.progressBarContainer}>
-                  <View style={[
-                    styles.progressBar,
-                    { width: `${progress * 100}%` }
-                  ]} />
-                </View>
-
+                <Text style={styles.progressPercent}>{progressPercent}%</Text>
                 <Text style={styles.sessionCount}>{sessionText}</Text>
               </View>
             </View>
           </Animated.View>
+
+          {/* 빠른 시작 버튼 */}
+          {!isActive && mode === 'pomodoro' && (
+            <View style={styles.quickStartContainer}>
+              <TouchableOpacity
+                style={styles.quickButton}
+                onPress={() => quickStart(5)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.quickButtonText}>5분</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.quickButton}
+                onPress={() => quickStart(10)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.quickButtonText}>10분</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.quickButton}
+                onPress={() => quickStart(15)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.quickButtonText}>15분</Text>
+              </TouchableOpacity>
+            </View>
+          )}
 
           {/* 컨트롤 버튼 */}
           <View style={styles.controlsContainer}>
             <TouchableOpacity
               style={styles.secondaryButton}
               onPress={resetTimer}
+              onLongPress={() => {
+                triggerHaptic('heavy');
+                Alert.alert('타이머 리셋', '타이머를 처음으로 되돌렸습니다.');
+                resetTimer();
+              }}
               activeOpacity={0.7}
               accessible={true}
               accessibilityLabel="타이머 리셋"
+              accessibilityHint="길게 누르면 즉시 리셋"
             >
               <Text style={styles.secondaryButtonText}>↺</Text>
             </TouchableOpacity>
@@ -483,11 +621,14 @@ export default function App() {
                 accessibilityLabel={isActive ? '타이머 일시정지' : '타이머 시작'}
               >
                 <LinearGradient
-                  colors={['#FFFFFF', '#F8F9FA']}
+                  colors={isActive ? ['#FF6B6B', '#FF8E53'] : ['#FFFFFF', '#F8F9FA']}
                   style={styles.primaryButtonGradient}
                 >
-                  <Text style={styles.primaryButtonText}>
-                    {isActive ? '일시정지' : '시작하기'}
+                  <Text style={[
+                    styles.primaryButtonText,
+                    isActive && styles.primaryButtonTextActive
+                  ]}>
+                    {isActive ? '⏸ 일시정지' : '▶ 시작하기'}
                   </Text>
                 </LinearGradient>
               </TouchableOpacity>
@@ -645,7 +786,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 15,
     marginTop: 10,
-    marginBottom: 30,
+    marginBottom: 20,
   },
   statCard: {
     backgroundColor: 'rgba(255, 255, 255, 0.25)',
@@ -681,7 +822,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   timerWrapper: {
-    marginBottom: 50,
+    marginBottom: 30,
   },
   circleContainer: {
     width: 320,
@@ -690,26 +831,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     position: 'relative',
   },
-  outerRing: {
+  progressCircle: {
     position: 'absolute',
-    width: 320,
-    height: 320,
-    borderRadius: 160,
-    borderWidth: 3,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   timerContent: {
-    width: 280,
-    height: 280,
-    borderRadius: 140,
-    backgroundColor: 'rgba(255, 255, 255, 0.95)',
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 15 },
-    shadowOpacity: 0.25,
-    shadowRadius: 25,
-    elevation: 15,
   },
   modeEmoji: {
     fontSize: 48,
@@ -717,35 +844,50 @@ const styles = StyleSheet.create({
   },
   modeTitle: {
     fontSize: 18,
-    color: '#666',
+    color: '#FFFFFF',
     fontWeight: '600',
     marginBottom: 15,
     letterSpacing: 1,
+    textShadowColor: 'rgba(0, 0, 0, 0.3)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 4,
   },
   timerText: {
     fontSize: 72,
     fontWeight: '900',
-    color: '#2D3436',
-    marginBottom: 20,
+    color: '#FFFFFF',
+    marginBottom: 10,
     letterSpacing: -2,
+    textShadowColor: 'rgba(0, 0, 0, 0.3)',
+    textShadowOffset: { width: 0, height: 4 },
+    textShadowRadius: 8,
   },
-  progressBarContainer: {
-    width: '65%',
-    height: 8,
-    backgroundColor: '#E8EAF0',
-    borderRadius: 10,
-    overflow: 'hidden',
-    marginBottom: 15,
-  },
-  progressBar: {
-    height: '100%',
-    backgroundColor: '#FF6B6B',
-    borderRadius: 10,
+  progressPercent: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.9)',
+    marginBottom: 10,
   },
   sessionCount: {
     fontSize: 15,
-    color: '#999',
+    color: 'rgba(255, 255, 255, 0.8)',
     fontWeight: '600',
+  },
+  quickStartContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 25,
+  },
+  quickButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  quickButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   controlsContainer: {
     flexDirection: 'row',
@@ -780,14 +922,17 @@ const styles = StyleSheet.create({
   },
   primaryButtonGradient: {
     paddingVertical: 22,
-    paddingHorizontal: 50,
+    paddingHorizontal: 45,
     borderRadius: 35,
   },
   primaryButtonText: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '800',
     color: '#FF6B6B',
     letterSpacing: 0.5,
+  },
+  primaryButtonTextActive: {
+    color: '#FFFFFF',
   },
   modeSelector: {
     flexDirection: 'row',
@@ -795,7 +940,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 6,
     gap: 6,
-    marginBottom: 25,
+    marginBottom: 20,
   },
   modeButton: {
     flex: 1,
