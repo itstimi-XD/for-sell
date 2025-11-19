@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,16 +8,18 @@ import {
   Platform,
   Alert,
   SafeAreaView,
-  Dimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Audio } from 'expo-av';
 import * as Notifications from 'expo-notifications';
-import { BlurView } from 'expo-blur';
+import * as StoreReview from 'expo-store-review';
 
-const { width } = Dimensions.get('window');
+// Components
+import PremiumModal from './components/PremiumModal';
+import ThemeSelector from './components/ThemeSelector';
+import CustomTimerModal from './components/CustomTimerModal';
+import { getThemeById } from './constants/themes';
 
 // 알림 핸들러 설정
 Notifications.setNotificationHandler({
@@ -29,31 +31,41 @@ Notifications.setNotificationHandler({
 });
 
 export default function App() {
-  const POMODORO_TIME = 25 * 60; // 25분
-  const SHORT_BREAK = 5 * 60; // 5분
-  const LONG_BREAK = 15 * 60; // 15분
+  const DEFAULT_TIMES = {
+    pomodoro: 25 * 60,
+    shortBreak: 5 * 60,
+    longBreak: 15 * 60,
+  };
 
-  const [timeLeft, setTimeLeft] = useState(POMODORO_TIME);
+  const [timerSettings, setTimerSettings] = useState(DEFAULT_TIMES);
+  const [timeLeft, setTimeLeft] = useState(DEFAULT_TIMES.pomodoro);
   const [isActive, setIsActive] = useState(false);
   const [mode, setMode] = useState('pomodoro');
   const [completedPomodoros, setCompletedPomodoros] = useState(0);
   const [totalPomodoros, setTotalPomodoros] = useState(0);
+  const [isPremium, setIsPremium] = useState(false);
+  const [currentTheme, setCurrentTheme] = useState('default');
+
+  // Modal states
+  const [showPremiumModal, setShowPremiumModal] = useState(false);
+  const [showThemeSelector, setShowThemeSelector] = useState(false);
+  const [showCustomTimer, setShowCustomTimer] = useState(false);
 
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const rotateAnim = useRef(new Animated.Value(0)).current;
+  const pulseAnimationRef = useRef(null);
   const intervalRef = useRef(null);
 
-  // 알림 권한 요청
+  // 초기 로드
   useEffect(() => {
     registerForPushNotificationsAsync();
-    loadStats();
+    loadAllData();
   }, []);
 
   // 타이머 활성화 시 펄스 애니메이션
   useEffect(() => {
     if (isActive) {
-      Animated.loop(
+      pulseAnimationRef.current = Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
             toValue: 1.05,
@@ -66,40 +78,82 @@ export default function App() {
             useNativeDriver: true,
           }),
         ])
-      ).start();
+      );
+      pulseAnimationRef.current.start();
     } else {
+      if (pulseAnimationRef.current) {
+        pulseAnimationRef.current.stop();
+      }
       pulseAnim.setValue(1);
     }
-  }, [isActive]);
+
+    return () => {
+      if (pulseAnimationRef.current) {
+        pulseAnimationRef.current.stop();
+      }
+    };
+  }, [isActive, pulseAnim]);
 
   const registerForPushNotificationsAsync = async () => {
-    if (Platform.OS === 'android') {
-      await Notifications.setNotificationChannelAsync('default', {
-        name: 'default',
-        importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 250, 250, 250],
-        lightColor: '#FF6B6B',
-      });
-    }
+    try {
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('default', {
+          name: 'default',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#FF6B6B',
+        });
+      }
 
-    const { status: existingStatus } = await Notifications.getPermissionsAsync();
-    let finalStatus = existingStatus;
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
 
-    if (existingStatus !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
-      finalStatus = status;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+
+      if (finalStatus !== 'granted') {
+        Alert.alert(
+          '알림 권한 필요',
+          '타이머 완료 시 알림을 받으려면 알림 권한이 필요합니다. 설정에서 권한을 허용해주세요.',
+          [{ text: '확인' }]
+        );
+      }
+    } catch (error) {
+      console.log('Push notification permission error:', error);
     }
   };
 
-  const loadStats = async () => {
+  const loadAllData = async () => {
     try {
-      const stats = await AsyncStorage.getItem('pomodoroStats');
+      const [stats, premium, theme, customTimes] = await Promise.all([
+        AsyncStorage.getItem('pomodoroStats'),
+        AsyncStorage.getItem('isPremium'),
+        AsyncStorage.getItem('currentTheme'),
+        AsyncStorage.getItem('timerSettings'),
+      ]);
+
       if (stats) {
         const { total } = JSON.parse(stats);
         setTotalPomodoros(total || 0);
       }
+
+      if (premium) {
+        setIsPremium(JSON.parse(premium));
+      }
+
+      if (theme) {
+        setCurrentTheme(theme);
+      }
+
+      if (customTimes) {
+        const parsed = JSON.parse(customTimes);
+        setTimerSettings(parsed);
+        setTimeLeft(parsed.pomodoro);
+      }
     } catch (error) {
-      console.log('Error loading stats:', error);
+      console.log('Error loading data:', error);
     }
   };
 
@@ -111,39 +165,51 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    if (isActive && timeLeft > 0) {
-      intervalRef.current = setInterval(() => {
-        setTimeLeft(time => time - 1);
-      }, 1000);
-    } else if (timeLeft === 0) {
-      handleTimerComplete();
-    } else {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
+  const savePremiumStatus = async (status) => {
+    try {
+      await AsyncStorage.setItem('isPremium', JSON.stringify(status));
+      setIsPremium(status);
+    } catch (error) {
+      console.log('Error saving premium status:', error);
     }
+  };
 
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
-    };
-  }, [isActive, timeLeft]);
+  const saveTheme = async (themeId) => {
+    try {
+      await AsyncStorage.setItem('currentTheme', themeId);
+      setCurrentTheme(themeId);
+    } catch (error) {
+      console.log('Error saving theme:', error);
+    }
+  };
 
-  const handleTimerComplete = async () => {
+  const saveTimerSettings = async (settings) => {
+    try {
+      await AsyncStorage.setItem('timerSettings', JSON.stringify(settings));
+      setTimerSettings(settings);
+      setTimeLeft(settings[mode]);
+    } catch (error) {
+      console.log('Error saving timer settings:', error);
+    }
+  };
+
+  const handleTimerComplete = useCallback(async () => {
     setIsActive(false);
 
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: mode === 'pomodoro' ? '🎉 집중 완료!' : '☕ 휴식 완료!',
-        body: mode === 'pomodoro'
-          ? '훌륭합니다! 휴식 시간입니다.'
-          : '다시 집중할 시간입니다!',
-        sound: true,
-      },
-      trigger: null,
-    });
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: mode === 'pomodoro' ? '🎉 집중 완료!' : '☕ 휴식 완료!',
+          body: mode === 'pomodoro'
+            ? '훌륭합니다! 휴식 시간입니다.'
+            : '다시 집중할 시간입니다!',
+          sound: true,
+        },
+        trigger: null,
+      });
+    } catch (error) {
+      console.log('Notification error:', error);
+    }
 
     if (mode === 'pomodoro') {
       const newCompleted = completedPomodoros + 1;
@@ -152,6 +218,14 @@ export default function App() {
       const newTotal = totalPomodoros + 1;
       setTotalPomodoros(newTotal);
       await saveStats(newTotal);
+
+      // 리뷰 요청 (10번째, 50번째)
+      if (newTotal === 10 || newTotal === 50) {
+        const available = await StoreReview.isAvailableAsync();
+        if (available) {
+          await StoreReview.requestReview();
+        }
+      }
 
       if (newCompleted % 4 === 0) {
         Alert.alert(
@@ -176,23 +250,36 @@ export default function App() {
         [{ text: '시작!', onPress: () => switchMode('pomodoro') }]
       );
     }
-  };
+  }, [mode, completedPomodoros, totalPomodoros]);
 
-  const switchMode = (newMode) => {
+  useEffect(() => {
+    if (isActive && timeLeft > 0) {
+      intervalRef.current = setInterval(() => {
+        setTimeLeft(time => time - 1);
+      }, 1000);
+    } else if (timeLeft === 0) {
+      handleTimerComplete();
+    } else {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    }
+
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
+  }, [isActive, timeLeft, handleTimerComplete]);
+
+  const switchMode = useCallback((newMode) => {
     setMode(newMode);
     setIsActive(false);
+    setTimeLeft(timerSettings[newMode]);
+  }, [timerSettings]);
 
-    const times = {
-      pomodoro: POMODORO_TIME,
-      shortBreak: SHORT_BREAK,
-      longBreak: LONG_BREAK
-    };
-
-    setTimeLeft(times[newMode]);
-  };
-
-  const toggleTimer = () => {
-    setIsActive(!isActive);
+  const toggleTimer = useCallback(() => {
+    setIsActive(prev => !prev);
 
     Animated.sequence([
       Animated.timing(scaleAnim, {
@@ -207,17 +294,34 @@ export default function App() {
         useNativeDriver: true,
       })
     ]).start();
-  };
+  }, [scaleAnim]);
 
-  const resetTimer = () => {
+  const resetTimer = useCallback(() => {
     setIsActive(false);
-    const times = {
-      pomodoro: POMODORO_TIME,
-      shortBreak: SHORT_BREAK,
-      longBreak: LONG_BREAK
-    };
-    setTimeLeft(times[mode]);
-  };
+    setTimeLeft(timerSettings[mode]);
+  }, [mode, timerSettings]);
+
+  const resetDailyCount = useCallback(() => {
+    setCompletedPomodoros(0);
+    Alert.alert('✨', '오늘의 카운트가 초기화되었습니다!');
+  }, []);
+
+  const handlePurchase = useCallback(() => {
+    // 실제로는 인앱 구매 로직이 들어가야 함
+    Alert.alert(
+      '구매 완료! 🎉',
+      '프리미엄 기능이 잠금 해제되었습니다!',
+      [
+        {
+          text: '확인',
+          onPress: () => {
+            savePremiumStatus(true);
+            setShowPremiumModal(false);
+          }
+        }
+      ]
+    );
+  }, []);
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -225,40 +329,50 @@ export default function App() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const getModeGradient = () => {
-    switch(mode) {
-      case 'pomodoro': return ['#FF6B6B', '#FF8E53', '#FFB347'];
-      case 'shortBreak': return ['#4ECDC4', '#44A08D', '#5BCFC5'];
-      case 'longBreak': return ['#667EEA', '#764BA2', '#8E73E8'];
-      default: return ['#FF6B6B', '#FF8E53', '#FFB347'];
-    }
-  };
+  const theme = useMemo(() => getThemeById(currentTheme), [currentTheme]);
 
-  const getModeText = () => {
+  const modeGradient = useMemo(() => {
+    switch(mode) {
+      case 'pomodoro': return theme.pomodoro;
+      case 'shortBreak': return theme.shortBreak;
+      case 'longBreak': return theme.longBreak;
+      default: return theme.pomodoro;
+    }
+  }, [mode, theme]);
+
+  const modeText = useMemo(() => {
     switch(mode) {
       case 'pomodoro': return '집중 시간';
       case 'shortBreak': return '짧은 휴식';
       case 'longBreak': return '긴 휴식';
       default: return '집중 시간';
     }
-  };
+  }, [mode]);
 
-  const getModeEmoji = () => {
+  const modeEmoji = useMemo(() => {
     switch(mode) {
       case 'pomodoro': return '🎯';
       case 'shortBreak': return '☕';
       case 'longBreak': return '🌟';
       default: return '🎯';
     }
-  };
+  }, [mode]);
 
-  const progress = timeLeft / (mode === 'pomodoro' ? POMODORO_TIME : mode === 'shortBreak' ? SHORT_BREAK : LONG_BREAK);
-  const circumference = 2 * Math.PI * 120;
-  const strokeDashoffset = circumference * (1 - progress);
+  const modeTip = useMemo(() => {
+    switch(mode) {
+      case 'pomodoro': return '💡 25분 동안 한 가지 일에만 집중하세요';
+      case 'shortBreak': return '💡 스트레칭이나 물 한 잔 어떠세요?';
+      case 'longBreak': return '💡 산책하거나 간단한 운동을 해보세요';
+      default: return '💡 25분 동안 한 가지 일에만 집중하세요';
+    }
+  }, [mode]);
+
+  const progress = timeLeft / timerSettings[mode];
+  const sessionText = mode === 'pomodoro' ? `세션 ${completedPomodoros + 1}` : '휴식 중';
 
   return (
     <LinearGradient
-      colors={getModeGradient()}
+      colors={modeGradient}
       style={styles.container}
       start={{ x: 0, y: 0 }}
       end={{ x: 1, y: 1 }}
@@ -266,14 +380,52 @@ export default function App() {
       <StatusBar style="light" />
       <SafeAreaView style={styles.safeArea}>
 
+        {/* 상단 설정 버튼 */}
+        <View style={styles.topBar}>
+          <TouchableOpacity
+            style={styles.iconButton}
+            onPress={() => setShowThemeSelector(true)}
+            accessible={true}
+            accessibilityLabel="테마 선택"
+          >
+            <Text style={styles.iconButtonText}>🎨</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.iconButton}
+            onPress={() => setShowCustomTimer(true)}
+            accessible={true}
+            accessibilityLabel="타이머 설정"
+          >
+            <Text style={styles.iconButtonText}>⚙️</Text>
+          </TouchableOpacity>
+          {!isPremium && (
+            <TouchableOpacity
+              style={styles.premiumButton}
+              onPress={() => setShowPremiumModal(true)}
+              accessible={true}
+              accessibilityLabel="프리미엄 구매"
+            >
+              <Text style={styles.premiumButtonText}>👑 PRO</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
         {/* 헤더 - 통계 */}
         <View style={styles.header}>
-          <View style={styles.statCard}>
+          <View
+            style={styles.statCard}
+            accessible={true}
+            accessibilityLabel={`오늘 완료한 세션: ${completedPomodoros}개`}
+          >
             <Text style={styles.statEmoji}>🔥</Text>
             <Text style={styles.statNumber}>{completedPomodoros}</Text>
             <Text style={styles.statLabel}>오늘</Text>
           </View>
-          <View style={styles.statCard}>
+          <View
+            style={styles.statCard}
+            accessible={true}
+            accessibilityLabel={`전체 완료한 세션: ${totalPomodoros}개`}
+          >
             <Text style={styles.statEmoji}>✨</Text>
             <Text style={styles.statNumber}>{totalPomodoros}</Text>
             <Text style={styles.statLabel}>전체</Text>
@@ -287,19 +439,17 @@ export default function App() {
               styles.timerWrapper,
               { transform: [{ scale: pulseAnim }] }
             ]}
+            accessible={true}
+            accessibilityLabel={`${modeText} 타이머: ${formatTime(timeLeft)}`}
           >
-            {/* 원형 프로그레스 배경 */}
             <View style={styles.circleContainer}>
-              {/* 외부 링 */}
               <View style={styles.outerRing} />
 
-              {/* 타이머 컨텐츠 */}
               <View style={styles.timerContent}>
-                <Text style={styles.modeEmoji}>{getModeEmoji()}</Text>
-                <Text style={styles.modeTitle}>{getModeText()}</Text>
+                <Text style={styles.modeEmoji}>{modeEmoji}</Text>
+                <Text style={styles.modeTitle}>{modeText}</Text>
                 <Text style={styles.timerText}>{formatTime(timeLeft)}</Text>
 
-                {/* 프로그레스 바 */}
                 <View style={styles.progressBarContainer}>
                   <View style={[
                     styles.progressBar,
@@ -307,9 +457,7 @@ export default function App() {
                   ]} />
                 </View>
 
-                <Text style={styles.sessionCount}>
-                  {mode === 'pomodoro' ? `세션 ${completedPomodoros + 1}` : '휴식 중'}
-                </Text>
+                <Text style={styles.sessionCount}>{sessionText}</Text>
               </View>
             </View>
           </Animated.View>
@@ -320,6 +468,8 @@ export default function App() {
               style={styles.secondaryButton}
               onPress={resetTimer}
               activeOpacity={0.7}
+              accessible={true}
+              accessibilityLabel="타이머 리셋"
             >
               <Text style={styles.secondaryButtonText}>↺</Text>
             </TouchableOpacity>
@@ -329,6 +479,8 @@ export default function App() {
                 style={styles.primaryButton}
                 onPress={toggleTimer}
                 activeOpacity={0.8}
+                accessible={true}
+                accessibilityLabel={isActive ? '타이머 일시정지' : '타이머 시작'}
               >
                 <LinearGradient
                   colors={['#FFFFFF', '#F8F9FA']}
@@ -343,11 +495,10 @@ export default function App() {
 
             <TouchableOpacity
               style={styles.secondaryButton}
-              onPress={() => {
-                setCompletedPomodoros(0);
-                Alert.alert('✨', '오늘의 카운트가 초기화되었습니다!');
-              }}
+              onPress={resetDailyCount}
               activeOpacity={0.7}
+              accessible={true}
+              accessibilityLabel="오늘의 카운트 초기화"
             >
               <Text style={styles.secondaryButtonText}>⟳</Text>
             </TouchableOpacity>
@@ -363,6 +514,8 @@ export default function App() {
             ]}
             onPress={() => switchMode('pomodoro')}
             activeOpacity={0.7}
+            accessible={true}
+            accessibilityLabel="집중 모드로 전환"
           >
             <Text style={[
               styles.modeButtonText,
@@ -379,6 +532,8 @@ export default function App() {
             ]}
             onPress={() => switchMode('shortBreak')}
             activeOpacity={0.7}
+            accessible={true}
+            accessibilityLabel="짧은 휴식 모드로 전환"
           >
             <Text style={[
               styles.modeButtonText,
@@ -395,6 +550,8 @@ export default function App() {
             ]}
             onPress={() => switchMode('longBreak')}
             activeOpacity={0.7}
+            accessible={true}
+            accessibilityLabel="긴 휴식 모드로 전환"
           >
             <Text style={[
               styles.modeButtonText,
@@ -407,16 +564,40 @@ export default function App() {
 
         {/* 하단 팁 */}
         <View style={styles.tipContainer}>
-          <Text style={styles.tipText}>
-            {mode === 'pomodoro'
-              ? '💡 25분 동안 한 가지 일에만 집중하세요'
-              : mode === 'shortBreak'
-              ? '💡 스트레칭이나 물 한 잔 어떠세요?'
-              : '💡 산책하거나 간단한 운동을 해보세요'
-            }
-          </Text>
+          <Text style={styles.tipText}>{modeTip}</Text>
         </View>
       </SafeAreaView>
+
+      {/* Modals */}
+      <PremiumModal
+        visible={showPremiumModal}
+        onClose={() => setShowPremiumModal(false)}
+        onPurchase={handlePurchase}
+      />
+
+      <ThemeSelector
+        visible={showThemeSelector}
+        onClose={() => setShowThemeSelector(false)}
+        currentTheme={currentTheme}
+        onSelectTheme={saveTheme}
+        isPremium={isPremium}
+        onUpgrade={() => {
+          setShowThemeSelector(false);
+          setShowPremiumModal(true);
+        }}
+      />
+
+      <CustomTimerModal
+        visible={showCustomTimer}
+        onClose={() => setShowCustomTimer(false)}
+        onSave={saveTimerSettings}
+        isPremium={isPremium}
+        onUpgrade={() => {
+          setShowCustomTimer(false);
+          setShowPremiumModal(true);
+        }}
+        currentSettings={timerSettings}
+      />
     </LinearGradient>
   );
 }
@@ -429,11 +610,41 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 20,
   },
+  topBar: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 10,
+    marginBottom: 10,
+  },
+  iconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  iconButtonText: {
+    fontSize: 22,
+  },
+  premiumButton: {
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: '#FFD700',
+  },
+  premiumButtonText: {
+    fontSize: 14,
+    fontWeight: '900',
+    color: '#333',
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'center',
     gap: 15,
-    marginTop: 20,
+    marginTop: 10,
     marginBottom: 30,
   },
   statCard: {
@@ -442,7 +653,6 @@ const styles = StyleSheet.create({
     padding: 20,
     minWidth: 110,
     alignItems: 'center',
-    backdropFilter: 'blur(10px)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.1,
