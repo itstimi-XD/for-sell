@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "포모타임 - 뽀모도로 타이머",
+    "slug": "pomotime",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FF6B6B"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pomotime.app",
+      "infoPlist": {
+        "UIBackgroundModes": ["audio"],
+        "NSUserNotificationsUsageDescription": "타이머 완료 시 알림을 받으려면 권한이 필요합니다."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FF6B6B"
+      },
+      "package": "com.pomotime.app",
+      "permissions": ["NOTIFICATIONS", "VIBRATE"],
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "notification": {
+      "icon": "./assets/notification-icon.png",
+      "color": "#FF6B6B"
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#FF6B6B"
+        }
+      ]
+    ]
+  }
+}
